@@ -41,7 +41,7 @@ int main(int argc, const char * argv[])
     ILidarDriver * drv = *lidarResult;
 
     // Connect
-    sl_result res = drv->connect(*channel);
+    sl_result res = drv->connect(channel);
     if (!SL_IS_OK(res)) {
         std::fprintf(stderr, "Error: cannot connect to LIDAR (error code: %08x)\n", res);
         delete drv;
@@ -50,14 +50,14 @@ int main(int argc, const char * argv[])
     }
 
     // Start motor (for A1/A2/A3; S1/S2 sometimes don’t need this but it doesn’t hurt)
-    drv->startMotor();
+    drv->setMotorSpeed();
 
     // Start scan
     LidarScanMode scanMode;
     res = drv->startScan(false, true, 0, &scanMode);
     if (!SL_IS_OK(res)) {
         std::fprintf(stderr, "Error: startScan failed (error code: %08x)\n", res);
-        drv->stopMotor();
+        drv->setMotorSpeed(0);
         drv->disconnect();
         delete drv;
         delete channel;
@@ -70,7 +70,7 @@ int main(int argc, const char * argv[])
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         std::fprintf(stderr, "SDL_Init error: %s\n", SDL_GetError());
         drv->stop();
-        drv->stopMotor();
+        drv->setMotorSpeed(0);
         drv->disconnect();
         delete drv;
         delete channel;
@@ -88,7 +88,7 @@ int main(int argc, const char * argv[])
         std::fprintf(stderr, "SDL_CreateWindow error: %s\n", SDL_GetError());
         SDL_Quit();
         drv->stop();
-        drv->stopMotor();
+        drv->setMotorSpeed(0);
         drv->disconnect();
         delete drv;
         delete channel;
@@ -101,7 +101,7 @@ int main(int argc, const char * argv[])
         SDL_DestroyWindow(window);
         SDL_Quit();
         drv->stop();
-        drv->stopMotor();
+        drv->setMotorSpeed(0);
         drv->disconnect();
         delete drv;
         delete channel;
@@ -167,7 +167,7 @@ int main(int argc, const char * argv[])
     // Cleanup
     // -----------------------------
     drv->stop();
-    drv->stopMotor();
+    drv->setMotorSpeed(0);
     drv->disconnect();
 
     delete drv;
