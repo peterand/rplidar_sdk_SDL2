@@ -1,15 +1,21 @@
+#if HAVE_SDL2
 #include <SDL2/SDL.h>
+#endif
 #include "sl_lidar.h"
 #include "sl_lidar_driver.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstddef>
+#include <thread>
 
 using namespace sl;
 
-#define SCREEN_WIDTH 800
-#define SCREEN_HEIGHT 800
+#if HAVE_SDL2
+#   define SCREEN_WIDTH 800
+#   define SCREEN_HEIGHT 800
+#endif
 #define MAX_DISTANCE_MM 8000.0   // Adjust to your lidar's max range
 
 int main(int argc, const char * argv[])
@@ -51,27 +57,27 @@ int main(int argc, const char * argv[])
     }
 
     // Start motor (for A1/A2/A3; S1/S2 sometimes don’t need this but it doesn’t hurt)
-    drv->startMotor();
+    //drv->startMotor();
  
     // Start scan
     LidarScanMode scanMode;
     res = drv->startScan(false, true, 0, &scanMode);
     if (!SL_IS_OK(res)) {
         std::fprintf(stderr, "Error: startScan failed (error code: %08x)\n", res);
-        drv->stopMotor();
+        //drv->stopMotor();
         drv->disconnect();
         delete drv;
         delete channel;
         return -1;
     }
-
+#if HAVE_SDL2
     // -----------------------------
     // Initialize SDL2
     // -----------------------------
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         std::fprintf(stderr, "SDL_Init error: %s\n", SDL_GetError());
         drv->stop();
-        drv->stopMotor();
+        //drv->stopMotor();
         drv->disconnect();
         delete drv;
         delete channel;
@@ -89,7 +95,7 @@ int main(int argc, const char * argv[])
         std::fprintf(stderr, "SDL_CreateWindow error: %s\n", SDL_GetError());
         SDL_Quit();
         drv->stop();
-        drv->stopMotor();
+        //drv->stopMotor();
         drv->disconnect();
         delete drv;
         delete channel;
@@ -102,7 +108,7 @@ int main(int argc, const char * argv[])
         SDL_DestroyWindow(window);
         SDL_Quit();
         drv->stop();
-        drv->stopMotor();
+        //drv->stopMotor();
         drv->disconnect();
         delete drv;
         delete channel;
@@ -168,7 +174,7 @@ int main(int argc, const char * argv[])
     // Cleanup
     // -----------------------------
     drv->stop();
-    drv->stopMotor();
+    //drv->stopMotor();
     drv->disconnect();
 
     delete drv;
@@ -179,4 +185,48 @@ int main(int argc, const char * argv[])
     SDL_Quit();
 
     return 0;
+#else
+    std::puts("SDL2 not found at build time. Running in headless console mode.");
+
+    // Poll a few scans and print a quick summary so the sample still runs without SDL2.
+    for (int iteration = 0; iteration < 20; ++iteration) {
+        sl_lidar_response_measurement_node_hq_t nodes[8192];
+        size_t count = sizeof(nodes) / sizeof(nodes[0]);
+
+        sl_result ans = drv->grabScanDataHq(nodes, count);
+        if (SL_IS_OK(ans)) {
+            drv->ascendScanData(nodes, count);
+
+            // Find the first valid sample to show distance feedback.
+            float first_valid_mm = -1.0f;
+            for (size_t pos = 0; pos < count; ++pos) {
+                float dist_mm = nodes[pos].dist_mm_q2 / 4.0f;
+                if (dist_mm > 0.0f) {
+                    first_valid_mm = dist_mm;
+                    break;
+                }
+            }
+
+            if (first_valid_mm > 0.0f) {
+                std::printf("Scan %02d: %zu samples, first valid distance: %.1f mm\n",
+                            iteration + 1, count, first_valid_mm);
+            } else {
+                std::printf("Scan %02d: %zu samples, no valid distances\n", iteration + 1, count);
+            }
+        } else {
+            std::printf("Scan %02d: grabScanDataHq failed (0x%08x)\n", iteration + 1, ans);
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    drv->stop();
+    drv->setMotorSpeed(0);
+    drv->disconnect();
+
+    delete drv;
+    delete channel;
+
+    return 0;
+#endif
 }
