@@ -1,6 +1,7 @@
 #include <SDL2/SDL.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +19,8 @@ namespace {
 constexpr int kWindowWidth = 900;
 constexpr int kWindowHeight = 900;
 constexpr float kDefaultRangeMm = 6000.0f;
+constexpr float kMinRangeMm = 500.0f;
+constexpr float kMaxRangeMm = 30000.0f;
 constexpr float kMarginPixels = 24.0f;
 
 float angleToRadians(const sl_lidar_response_measurement_node_hq_t &node) {
@@ -98,6 +101,67 @@ struct SDLContext {
     SDL_Renderer *renderer = nullptr;
 };
 
+constexpr int kGlyphWidth = 3;
+constexpr int kGlyphHeight = 5;
+struct Glyph {
+    char ch;
+    std::array<uint8_t, kGlyphHeight> rows;
+};
+
+const Glyph *findGlyph(char c) {
+    static constexpr std::array<Glyph, 12> kFont{{
+        {'0', {0b111, 0b101, 0b101, 0b101, 0b111}},
+        {'1', {0b010, 0b110, 0b010, 0b010, 0b111}},
+        {'2', {0b111, 0b001, 0b111, 0b100, 0b111}},
+        {'3', {0b111, 0b001, 0b111, 0b001, 0b111}},
+        {'4', {0b101, 0b101, 0b111, 0b001, 0b001}},
+        {'5', {0b111, 0b100, 0b111, 0b001, 0b111}},
+        {'6', {0b111, 0b100, 0b111, 0b101, 0b111}},
+        {'7', {0b111, 0b001, 0b010, 0b010, 0b010}},
+        {'8', {0b111, 0b101, 0b111, 0b101, 0b111}},
+        {'9', {0b111, 0b101, 0b111, 0b001, 0b111}},
+        {'m', {0b110, 0b101, 0b101, 0b101, 0b101}},
+        {' ', {0b000, 0b000, 0b000, 0b000, 0b000}},
+    }};
+
+    for (const auto &glyph : kFont) {
+        if (glyph.ch == c) {
+            return &glyph;
+        }
+    }
+    return nullptr;
+}
+
+int textWidth(const std::string &text, int scale) {
+    const int perGlyph = (kGlyphWidth + 1) * scale;
+    return static_cast<int>(text.size()) * perGlyph - scale;  // Remove trailing spacing.
+}
+
+void drawGlyph(SDL_Renderer *renderer, const Glyph &glyph, int x, int y, SDL_Color color, int scale) {
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    for (int row = 0; row < kGlyphHeight; ++row) {
+        for (int col = 0; col < kGlyphWidth; ++col) {
+            if ((glyph.rows[row] >> (kGlyphWidth - col - 1)) & 0x1) {
+                for (int dy = 0; dy < scale; ++dy) {
+                    for (int dx = 0; dx < scale; ++dx) {
+                        SDL_RenderDrawPoint(renderer, x + col * scale + dx, y + row * scale + dy);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void drawText(SDL_Renderer *renderer, int x, int y, const std::string &text, SDL_Color color, int scale) {
+    int cursorX = x;
+    for (char c : text) {
+        if (const Glyph *glyph = findGlyph(c)) {
+            drawGlyph(renderer, *glyph, cursorX, y, color, scale);
+        }
+        cursorX += (kGlyphWidth + 1) * scale;
+    }
+}
+
 bool initializeSDL(SDLContext &context) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
@@ -162,6 +226,21 @@ void renderScan(SDL_Renderer *renderer, const SDL_Point &center, const std::vect
     SDL_Color gridColor{60, 60, 60, 255};
     for (float ringMm = 1000.0f; ringMm <= displayRangeMm; ringMm += 1000.0f) {
         drawRing(renderer, center, ringMm * mmToPixels, gridColor);
+
+        const std::string label = std::to_string(static_cast<int>(ringMm / 1000.0f)) + "m";
+        const int labelScale = 2;
+        const int labelWidth = textWidth(label, labelScale);
+        const int labelHeight = kGlyphHeight * labelScale;
+        int labelX = center.x + static_cast<int>(ringMm * mmToPixels) + 6;
+        int labelY = center.y - labelHeight / 2;
+
+        const int maxX = windowWidth - labelWidth - static_cast<int>(kMarginPixels);
+        const int minY = static_cast<int>(kMarginPixels);
+        const int maxY = windowHeight - labelHeight - static_cast<int>(kMarginPixels);
+        labelX = std::min(labelX, maxX);
+        labelY = std::clamp(labelY, minY, maxY);
+
+        drawText(renderer, labelX, labelY, label, gridColor, labelScale);
     }
 
     SDL_SetRenderDrawColor(renderer, 120, 120, 120, 255);
@@ -264,6 +343,8 @@ int main(int argc, const char *argv[]) {
 
     SDL_Point center{kWindowWidth / 2, kWindowHeight / 2};
     std::vector<sl_lidar_response_measurement_node_hq_t> nodes(8192);
+    float displayRangeMm = kDefaultRangeMm;
+    bool autoScaleRange = true;
     bool running = true;
     while (running) {
         SDL_Event event;
@@ -273,6 +354,30 @@ int main(int argc, const char *argv[]) {
             } else if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED) {
                 center.x = event.window.data1 / 2;
                 center.y = event.window.data2 / 2;
+            } else if (event.type == SDL_MOUSEWHEEL) {
+                const float zoomFactor = (event.wheel.y > 0) ? 0.9f : 1.1f;
+                displayRangeMm = std::clamp(displayRangeMm * zoomFactor, kMinRangeMm, kMaxRangeMm);
+                autoScaleRange = false;
+            } else if (event.type == SDL_KEYDOWN) {
+                switch (event.key.keysym.sym) {
+                case SDLK_EQUALS:
+                case SDLK_PLUS:
+                case SDLK_KP_PLUS:
+                    displayRangeMm = std::clamp(displayRangeMm * 0.9f, kMinRangeMm, kMaxRangeMm);
+                    autoScaleRange = false;
+                    break;
+                case SDLK_MINUS:
+                case SDLK_KP_MINUS:
+                    displayRangeMm = std::clamp(displayRangeMm * 1.1f, kMinRangeMm, kMaxRangeMm);
+                    autoScaleRange = false;
+                    break;
+                case SDLK_0:
+                case SDLK_KP_0:
+                    autoScaleRange = true;
+                    break;
+                default:
+                    break;
+                }
             }
         }
 
@@ -288,7 +393,11 @@ int main(int argc, const char *argv[]) {
             }
         }
 
-        renderScan(sdl.renderer, center, nodes, maxDistance);
+        if (autoScaleRange) {
+            displayRangeMm = std::clamp(maxDistance, kMinRangeMm, kMaxRangeMm);
+        }
+
+        renderScan(sdl.renderer, center, nodes, displayRangeMm);
     }
 
     shutdownSDL(sdl);
